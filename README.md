@@ -1,6 +1,6 @@
 # AADJ-x509-Device-Sync
 ## Thanks
-This is an adaptation of https://github.com/tcppapi/AADx509Sync by @tcppapi
+This is an adaptation of [AADx509Sync by @tcppapi](https://github.com/tcppapi/AADx509Sync)
 
 This script completes the workflow for x509Certificates for Device Auth. We are not using user certificates in this version. 
 
