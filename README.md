@@ -5,13 +5,14 @@ This is an adaptation of https://github.com/tcppapi/AADx509Sync by @tcppapi
 This script completes the workflow for x509Certificates for Device Auth. We are not using user certificates in this version. 
 
 # Prerequisites
-- Azure App Registration for connecting to AAD/Intune
-- Device Certificates issued via SCEP - PKCS Certificates may work, but the script is looking for a specific SAN when comparing certificate to device. 
-- AAD Group Writeback v2 enabled in ADDC 
+- [Azure App Registration](https://github.com/CodyRWhite/AADJ-x509-Device-Sync/edit/main/README.md#intune-device-certificate) for connecting to AAD/Intune
+- [Device Certificates issued via SCEP](https://github.com/CodyRWhite/AADJ-x509-Device-Sync/edit/main/README.md#intune-device-certificate) - PKCS Certificates may work, but the script is looking for a specific SAN when comparing certificate to device. 
+- [AAD Group Writeback v2](https://github.com/CodyRWhite/AADJ-x509-Device-Sync/edit/main/README.md#aad-group-writeback-v2) enabled in ADDC 
+- [Disable SAN UPN Mapping on Domain Controllers](https://github.com/CodyRWhite/AADJ-x509-Device-Sync/edit/main/README.md#disable-san-upn-mapping-on-domain-controllers)
 - PowerShell Modules 
-  - ActiveDirectory
-  - WindowsAuotpilotIntune
-  - PSPKI
+  - [ActiveDirectory](https://learn.microsoft.com/en-us/powershell/module/activedirectory/)
+  - [WindowsAuotpilotIntune](https://www.powershellgallery.com/packages/WindowsAutoPilotIntune)
+  - [PSPKI](https://www.powershellgallery.com/packages/PSPKI)
 - AD Group for creating Intune AP Device Records
 - AAD Group for maintaining device profiles for x509 Auth 
 - AD Group for maintaining device objects for NPS
@@ -36,27 +37,28 @@ NOTE! In the native version of this script, it will remove all stale members fro
 # Setup 
 I will not go through each step-in detail on this but rather a quick overview of what needs setup. 
 
-## Azure App Registration
-Minimum permissions for App registration
-
-![image](https://user-images.githubusercontent.com/56890437/229801998-5a2d8841-1c7d-4837-8f34-79b97d453acd.png)
-
+## Disable SAN UPN Mapping on Domain Controllers
+[MicrosoftDocs/How to disable the Subject Alternative Name for UPN mapping](https://learn.microsoft.com/en-us/troubleshoot/windows-server/windows-security/disable-subject-alternative-name-upn-mapping)
 
 ## AAD Group Writeback v2
 Nothing super specific here, just followed the following doc's
 
-https://learn.microsoft.com/en-us/azure/active-directory/hybrid/how-to-connect-group-writeback-v2
+[MicrosoftDocs/Plan for Azure AD Connect group writeback](https://learn.microsoft.com/en-us/azure/active-directory/hybrid/how-to-connect-group-writeback-v2)
 
-https://learn.microsoft.com/en-us/azure/active-directory/hybrid/how-to-connect-group-writeback-enable
+[MicrosoftDocs/Enable Azure AD Connect group writeback](https://learn.microsoft.com/en-us/azure/active-directory/hybrid/how-to-connect-group-writeback-enable)
 
-this is always good to have if it’s not enabled 😊
+[MicrosoftDocs/Azure AD Connect sync: Enable Active Directory recycle bin](https://learn.microsoft.com/en-us/azure/active-directory/hybrid/how-to-connect-sync-recycle-bin) this is always good to have if it’s not enabled 😊
 
-https://learn.microsoft.com/en-us/azure/active-directory/hybrid/how-to-connect-sync-recycle-bin
+## Azure App Registration
+Minimum permissions for App registration
 
+<img src="https://user-images.githubusercontent.com/56890437/229801998-5a2d8841-1c7d-4837-8f34-79b97d453acd.png" width="798" height="269">
 
 ## Intune Device Certificate
 Sample configuration of SCEP Certificate
 
-Important parts are the subject alternative names specifically the host/{{AAD_Device_ID}} entry. This is used when filtering certificates to devices records.
+Important parts are the subject alternative names specifically the `host/{{AAD_Device_ID}}` entry. This is used when filtering certificates to devices records.
 
-![image](https://user-images.githubusercontent.com/56890437/229803126-03c85217-50af-472c-94d5-dc6089e95553.png)
+<img src="https://user-images.githubusercontent.com/56890437/229803126-03c85217-50af-472c-94d5-dc6089e95553.png" width="440" height="645">
+
+
