@@ -3,31 +3,29 @@ param(
     [Parameter(Mandatory = $False)] [Switch] $NameMap
 )
 
-# Set the Tenant and App details
 $TenantId = "<Your Tenant ID>"
 $ClientId = "<Your Application Client ID>"
-$ClientSecret = "<Your Application Secret"
+#$ClientSecret = ""
+$Thumbprint = "<Your Client Certificate Thumbprint>"
 
-$RequiredModules = "ActiveDirectory", "WindowsAutopilotIntune", "PSPKI"
+$RequiredModules = "ActiveDirectory", "PSPKI", "Microsoft.Graph" #"Microsoft.Graph.Authentication", "Microsoft.Graph.DeviceManagement", "Microsoft.Graph.Groups" #, "Microsoft.Graph.Device"
 
-# Set the OU for computer object creation of Autopilot Devices
-$orgUnit = "OU=AAD Computers,OU=Autopilot Domain Join,DC=domain,DC=com" 
+# Set the OU for computer object creation
+$domain = "DOMAIN.TLD"
+$orgUnit = "OU=AAD Computers,OU=Autopilot Domain Join,DC=domain,DC=tld" 
 
-# Set the domain for UPN Verification on certs 
-$domain = "domain.com"
-
-# Set User groups for NPS multiple groups are allowed
+# Set User groups for NPS 
 $groupList = @"
 [ 
     {
-        "GroupName" : "Internal_WiFi_Devices_1", #This is just a name for logging details
-        "ADGroupName" : "Internal_WiFi_Devices_1",  # This is the name of the group in AD that you want to copy devices into
-        "AADGroupID" : "Group_f9e402893-234-234-f-234-7de8030b" # This is the AD name of the group that is sync'd from AAD 
+        "GroupName" : "Internal_WiFi_Devices",
+        "ADGroupName" : "Internal_WiFi_Devices",
+        "EntraGroupID" : "f9e4a2a5-...-59f17de8030b"
     },
     {
-        "GroupName" : "Internal_WiFi_Devices_2",
-        "ADGroupName" : "Internal_WiFi_Devices_2",
-        "AADGroupID" : "Group_f9e402893-23443-234-f-234-7de8030b"
+        "GroupName" : "Internal_WiFi_2-Devices",
+        "ADGroupName" : "Internal_WiFi_2-Devices",
+        "EntraGroupID" : "df896196-...-942f32bcf955"
     }
 ]
 "@ | ConvertFrom-Json
@@ -38,9 +36,16 @@ ForEach ($Module in $RequiredModules) {
     [Version]$OnlineVersion = (Find-Module -Name $Module -ErrorAction SilentlyContinue).Version
     [Version]$InstalledVersion = (Get-Module -ListAvailable -Name $Module | Sort-Object Version -Descending  | Select-Object Version -First 1).Version
     Write-Host -ForegroundColor DarkGray "Installed Version: $InstalledVersion /// Online Version: $OnlineVersion "
-    IF ( $OnlineVersion -gt $InstalledVersion) {
+    IF ( $OnlineVersion -gt $InstalledVersion) {        
+        #$OldModule = @{
+        #   ModuleName = $Module
+        #   ModuleVersion = $InstalledVersion
+        #}
+        #Remove-Module -FullyQualifiedName $OldModule -Force
+
         Write-Host -ForegroundColor DarkGray "Installing $Module Module "
-        Install-Module -Name $Module -Force -AllowClobber
+        Install-Module -Name $Module -Force -AllowClobber        
+
     }
     IF (!(Get-Module -Name $Module)) {
         Write-Host -ForegroundColor DarkGray "Importing $Module Module"
@@ -48,14 +53,25 @@ ForEach ($Module in $RequiredModules) {
     }
 }
 
-# Connect to MSGraph with application credentials
-Connect-MSGraphApp -Tenant $TenantId -AppId $ClientId -AppSecret $ClientSecret
+# Connect to MgGraph with application credentials
+Connect-MgGraph -TenantId $TenantId -AppId $ClientId -CertificateThumbprint $Thumbprint -NoWelcome
 
+#region Add Autopilot Devices
+Write-Host "<Autopilot Device Mapping> Starting Autopilot to AD group mapping..." -ForegroundColor Green
+
+Write-Host "<Autopilot Device Mapping> Gathering autopilot members from Intune..." -ForegroundColor Green
 # Pull latest Autopilot device information
-$AutopilotDevices = Get-AutopilotDevice
+Try{
+    $AutopilotDevices = Get-MgDeviceManagementWindowsAutopilotDeviceIdentity -ErrorAction Stop
+} catch {
+    Write-Host "<Autopilot Device Mapping> Unable to download autopilot list... " -ForegroundColor Red
+    Write-Host "<Error> $($_.Exception.Message)" -ForegroundColor Red
+    exit 1
+}
+
 
 # Create new Autopilot computer objects in AD while skipping already existing computer objects
-Write-Host "<Add/Update AP Device> Starting AP Device AD Compare to Update and Add Devices to AD"  -ForegroundColor Green
+Write-Host "<Autopilot Device Mapping> Adding missing objects to $orgUnit."  -ForegroundColor Green
 foreach ($Device in $AutopilotDevices) {
     Clear-Variable ADDevice, deviceDescription, altSecurityIdentities -ErrorAction SilentlyContinue -Force
 
@@ -64,27 +80,27 @@ foreach ($Device in $AutopilotDevices) {
     
     if ($ADDevice) {
         if ($ADDevice.Description -ne $deviceDescription) {
-            Write-Host "<Add/Update AP Device> Device $($Device.azureActiveDirectoryDeviceId) already exists but description is not expected. Updating AD device description." -ForegroundColor Green
-            Set-ADComputer -Identity "$($Device.azureActiveDirectoryDeviceId.Substring(0,[math]::min(15,$Device.azureActiveDirectoryDeviceId.length)))" -Description $deviceDescription
+            Write-Host "<Autopilot Device Mapping> Device $($Device.azureActiveDirectoryDeviceId) already exists but description is not expected. Updating AD device description." -ForegroundColor Green
+            Set-ADComputer -Identity "$($Device.azureActiveDirectoryDeviceId.Substring(0,[math]::min(15,$Device.azureActiveDirectoryDeviceId.length)))" -Description $deviceDescription  
         }
         else {
-            Write-Host "<Add/Update AP Device> Skipping $($Device.azureActiveDirectoryDeviceId) because it already exists. " -ForegroundColor Yellow
+            #Write-Host "<Autopilot Device Mapping> Skipping $($Device.azureActiveDirectoryDeviceId) because it already exists. " -ForegroundColor Yellow
         }
     }
     else {
         # Create new AD computer object
         try {
             New-ADComputer -Name "$($Device.azureActiveDirectoryDeviceId)" -Path $orgUnit -SAMAccountName "$($Device.azureActiveDirectoryDeviceId.Substring(0,[math]::min(15,$Device.azureActiveDirectoryDeviceId.length)))`$" -ServicePrincipalNames "HOST/$($Device.azureActiveDirectoryDeviceId)", "HOST/$($Device.azureActiveDirectoryDeviceId).$domain" -Description $deviceDescription 
-            Write-Host "<Add/Update AP Device> Computer object created. ($($Device.azureActiveDirectoryDeviceId))" -ForegroundColor Green
+            Write-Host "<Autopilot Device Mapping> Computer object created. ($($Device.azureActiveDirectoryDeviceId))" -ForegroundColor Green
         }
         catch {
-            Write-Host "<Add/Update AP Device> Error. Skipping computer object creation." -ForegroundColor Red
+            Write-Host "<Autopilot Device Mapping> Error. Skipping computer object creation." -ForegroundColor Red
         }
     }
 }
 
-# Reverse the process and remove any stale computer objects in AD that are no longer in Autopilot
-Write-Host "<Add/Update AP Device> Starting AP Device AD Compare to Remove Devices from AD"  -ForegroundColor Green
+# Reverse the process and remove any dummmy computer objects in AD that are no longer in Autopilot
+Write-Host "<Autopilot Device Mapping> Removing orpahaned objects from $orgUnit."  -ForegroundColor Green
 $DummyDevices = Get-ADComputer -Filter * -SearchBase $orgUnit | Select-Object Name, SAMAccountName
 foreach ($DummyDevice in $DummyDevices) {
     if ($AutopilotDevices.azureActiveDirectoryDeviceId -contains $DummyDevice.Name) {
@@ -96,20 +112,16 @@ foreach ($DummyDevice in $DummyDevices) {
         #Remove -WhatIf once you are comfortrable with this workflow and have verified the remove operations are only performed in the OU you specified
     }
 }
+#endregion 
 
-#Starting Certificate details section
+#region Certificate mapping
 Write-Host "<Certificate Binding> Starting certificate hash sync..." -ForegroundColor Green
 Write-Host "<Certificate Binding> Fetching domain Certificate Authorities..." -ForegroundColor Green
-
-#Generating a list of all PKI cervers in your environment
 $certificateAuthorities = Get-CertificationAuthority
-
 try {
     Clear-Variable IssuedCerts, IssuedRaw -ErrorAction SilentlyContinue
-    
-    # Get all active public certificate information from all PKI Servers    
-    foreach ($CAHost in $certificateAuthorities.ComputerName) {
-        Write-Host "<Certificate Binding> Getting all issued certs from '$CAHost'..." -ForegroundColor Green
+    foreach ($CAHost in $certificateAuthorities) {
+        Write-Host "<Certificate Binding> Getting all issued certs from '$($CAHost.ComputerName)'..." -ForegroundColor Green
         $IssuedRaw = Get-IssuedRequest -CertificationAuthority $CAHost -Property RequestID, ConfigString, CommonName, DistinguishedName, CertificateHash, SerialNumber, SubjectKeyIdentifier, RawPublicKey, RawCertificate
         $IssuedCerts += $IssuedRaw | Select-Object -Property RequestID, ConfigString, CommonName, DistinguishedName, @{
             name       = 'SANPrincipalName';
@@ -156,7 +168,6 @@ catch {
     Write-Host "<Certificate Binding> Error getting issued certificates from ADCS servers" -ForegroundColor Red
 }
 
-# Get all AD Computer Objects from your AP Group that were generated in the first phase.
 try { 
     Write-Host "<Certificate Binding> Getting AD objects..." -ForegroundColor Green
     $AADx509Devs = Get-ADComputer -Filter '(objectClass -eq "computer")' -SearchBase $orgUnit -Property Name, Description, altSecurityIdentities
@@ -166,14 +177,14 @@ catch {
     Write-Host  "<Certificate Binding> Error getting AADx509 computers for hash sync" -ForegroundColor Green
 }
 
-#Loop through all devices and update certificate information where missing.
+#$AADx509Devs = $AADx509Devs | Where-OBject -Property Name -EQ "0fd71e56-5102-467c-a96b-448d006a8169"
+#$IssuedCerts = $null
+#$device = $AADx509Devs | Where-OBject -Property Name -EQ "2cda6552-3728-40a0-b7d4-bc5e4b9f43c6"
 foreach ($device in $AADx509Devs) {
     Clear-Variable altSecurityIdentities, certAltSecurityIdentities -ErrorAction SilentlyContinue -Force
     
-    # Get certificate for current device
     $certs = $IssuedCerts | Where-Object -Property "SANPrincipalName" -Like "host/$($device.Name)"
     if ($certs) {
-        #if the device has multiple active certificiates and generate security identities for each 
         ForEach ($cert in $certs) {
             $certAltSecurityIdentities += @(
                 "X509:<I>$($cert.Issuer)<S>$($cert.DistinguishedName)"
@@ -184,19 +195,17 @@ foreach ($device in $AADx509Devs) {
             )
         }
 
-        # Clean up any duplicate identiites, typically this is for the non cert specific ones
         $certAltSecurityIdentities = $certAltSecurityIdentities | Select-Object -Unique
         
         try {
-            #Loop through each cert identity and add it to the device if missing
             ForEach ($certAltSecurityIdentity in $certAltSecurityIdentities) {
                 if (!($certAltSecurityIdentity -in $device.altSecurityIdentities)) {
-                    $altSecurityIdentities = @{"altSecurityIdentities" = $certAltSecurityIdentity.ToString()}
+                    $altSecurityIdentities = @{"altSecurityIdentities" = $certAltSecurityIdentity.ToString() }
                     Write-Host "<Certificate Binding> Mapping '$($device.Name) ($($device.description))' to '$certAltSecurityIdentity'" -ForegroundColor Green
                     Get-ADComputer -Filter "(servicePrincipalName -like 'host/$($device.Name)')" | Set-ADComputer -Add $altSecurityIdentities
                 }
                 else {
-                    Write-Host "<Certificate Binding> Mapping Exists for '$($device.Name) ($($device.description))' to '$certAltSecurityIdentity'" -ForegroundColor Yellow
+                    # Write-Host "<Certificate Binding> Mapping Exists for '$($device.Name) ($($device.description))' to '$certAltSecurityIdentity'" -ForegroundColor Yellow
                 }
             }
         }
@@ -206,7 +215,6 @@ foreach ($device in $AADx509Devs) {
         }
 
         try {
-            # Loop through all identities on the deivce and remove any stale entries
             ForEach ($deviceAltSecurityIdentity in $device.altSecurityIdentities) {
                 if (!($deviceAltSecurityIdentity -in $certAltSecurityIdentities)) {
                     $altSecurityIdentities = @{
@@ -223,69 +231,84 @@ foreach ($device in $AADx509Devs) {
         }
     }
     else {
-        # If device no longer has any valid certificates but has listed identities, clear the identities
         if ($device.altSecurityIdentities) {
             Write-Host "<Certificate Binding> No certificates found for '$($device.Name) ($($device.description))' altSecurityIdentities not <null>, clearing altSecurityIdentities" -ForegroundColor Yellow
             Get-ADComputer -Filter "(servicePrincipalName -like 'host/$($device.Name)')" | Set-ADComputer -Clear "altSecurityIdentities"
         }
     }
 }
+#endregion Certificate mapping
 
-# AAD Group Writeback update local group. The writeback groups load in msDS-Device objects for AADJ Devices which will not work with NPS. The below matches those devices to computer devices and updates a AD Group that is used in NPS
-$aadADObjectFilter = '(objectClass -eq "msDS-Device")'
-Write-Host "<AAD Group Mapping> Starting AAD to AD group mapping..." -ForegroundColor Green
-foreach ($group in $groupList) {
-    Write-Host "<AAD Group Mapping> Processing group $($group.GroupName)..." -ForegroundColor Green
-    #Get all Ojbjects from the 2 groups. 
-    $adGroup = Get-ADGroup -Filter "cn -eq '$($group.ADGroupName)'"
-    $aadGroup = Get-ADGroup -Filter "adminDescription -eq '$($group.AADGroupID)'"
-    
-    # Get all membership details from groups
-    $adGroupMembers = Get-ADGroup -Filter "cn -eq '$($group.ADGroupName)'" | Get-ADGroupMember
-    $aadGroupMembers = $(Get-ADObject -Filter $aadADObjectFilter -Properties MemberOf, servicePrincipalName, Name, DisplayName, objectClass, msDS-DeviceObjectVersion) | Where-Object -Property "MemberOf" -Contains $aadGroup.DistinguishedName | Sort-Object -Property "DisplayName"
-    
-    Write-Host "<AAD Group Mapping> AAD Group has $(($aadGroupMembers | Measure-Object).Count) members and AD has $(($adGroupMembers | Measure-Object).Count) members." -ForegroundColor Green
-    Write-Host "<AAD Group Mapping> Checking to see if group $($adGroup.Name) is missing any members." -ForegroundColor Green
-    foreach ($aadGroupMember in $aadGroupMembers) {
-        try {
-            Clear-Variable adComputer, aadComputerName, adComputerNames -Force -ErrorAction SilentlyContinue
-            # Check if object is missing
-            if (!($aadGroupMember.Name -in $adGroupMembers.Name -or $aadGroupMember.Name -in $adGroupMembers.ObjectGUID)) {
-                # Match object by class to determan what property to compare to for AADJ vs AD Devices. 
-                switch($aadGroupMember.ObjectClass){
-                    "computer"{
-                        $adComputer = Get-ADComputer -Filter "cn -eq '$($aadGroupMember.Name)'"
-                    }
-                    "msDS-Device"{
-                        IF ($aadGroupMember."msDS-DeviceObjectVersion" -eq 2){
-                            $adComputer = Get-ADComputer -Filter "cn -eq '$($aadGroupMember.Name)'"
-                        }else{
-                            $adComputer = Get-ADComputer -Filter "ObjectGUID -eq '$($aadGroupMember.Name)'"
-                        }
-                        
-                    }
-                }
-                Write-Host "<AAD Group Mapping> Adding $($aadGroupMember.Name)($($aadGroupMember.DisplayName)) member to group $($adGroup.Name)" -ForegroundColor Green
-                # Add deivce object to AD Group
-                Add-ADGroupMember -Identity $adGroup.Name -Members $adComputer.DistinguishedName
-            }
+#region Device Group Matching / Creation
+Write-Host "<Entra Group Mapping> Starting Entra to AD group mapping..." -ForegroundColor Green
+ForEach ($Group in $groupList) {
+    Clear-Variable entraGroup, entraGroupMembers, adGroup, adGroupMembers -Force -ErrorAction SilentlyContinue
+
+    Write-Host "<Entra Group Mapping> Processing group $($group.GroupName)..." -ForegroundColor Green 
+    $entraGroup = Get-MgGroup -GroupId $Group.EntraGroupID
+    $entraGroupMembers = Get-MgGroupMember -All -GroupId $entraGroup.Id
+
+    $adGroup = Get-ADGroup -Filter "cn -eq '$($group.ADGroupName)'" -Server $domain
+    $adGroupMembers = Get-ADGroup -Filter "cn -eq '$($group.ADGroupName)'" -Server $domain | Get-ADGroupMember -Server $domain
+
+    Write-Host "<Entra Group Mapping> Entra Group has $(($entraGroupMembers | Measure-Object).Count) members and AD has $(($adGroupMembers | Measure-Object).Count) members." -ForegroundColor Green
+    Write-Host "<Entra Group Mapping> Checking to see if group $($adGroup.Name) is missing any members." -ForegroundColor Green
+    $DeviceArray = [System.Collections.ArrayList]::new()
+    forEach ($Member in $entraGroupMembers) {
+        $Device = Get-MgDevice -DeviceId $Member.Id
+        If ($Device.EnrollmentType -in ("AzureDomainJoined", "AzureADJoinUsingWhiteGlove") ) {
+            $tempDevice = [System.Collections.Generic.List[PSObject]]::new()
+            $tempDevice.Add([pscustomobject] @{
+                    "Id"             = "$($Device.Id)"
+                    "DeviceId"       = "$($Device.DeviceId)"
+                    "DisplayName"    = "$($Device.DisplayName)"
+                    "EnrollmentType" = "$($Device.EnrollmentType)"
+                    "LookupValue"    = "$($Device.DeviceId)"
+                })
+            $DeviceArray.AddRange($tempDevice)
         }
-        catch {
-            Write-Host "<AAD Group Mapping> Unable to locate computer object $($aadGroupMember.Name)($($aadGroupMember.DisplayName))" -ForegroundColor Red
+        else {
+            $tempDevice = [System.Collections.Generic.List[PSObject]]::new()
+            $tempDevice.Add([pscustomobject] @{
+                    "Id"             = "$($Device.Id)"
+                    "DeviceId"       = "$($Device.DeviceId)"
+                    "DisplayName"    = "$($Device.DisplayName)"
+                    "EnrollmentType" = "$($Device.EnrollmentType)"                    
+                    "LookupValue"    = "$($Device.DisplayName)"
+                })
+            $DeviceArray.AddRange($tempDevice)
+        }
+    }   
+
+    # Compare Entra Devices to AD 
+    Write-Host "<Entra Group Mapping> Adding missing objects to $($adGroup.Name)." -ForegroundColor Green
+    ForEach ($Device in $DeviceArray) {
+        IF ($Device.LookupValue -in $adGroupMembers.name) {
+            #Write-Host "<Entra Group Mapping> Member $($Device.DisplayName)($($Device.LookupValue)) already exists in group $($adGroup.Name)" -ForegroundColor Green
+        }
+        else {     
+            $adComputer = $null       
+            $adComputer = Get-ADComputer -Filter "cn -eq '$($Device.LookupValue)'" -Server $domain
+            IF ($adComputer) {
+                Write-Host "<Entra Group Mapping> Adding $($Device.DisplayName)($($Device.LookupValue)) member to group $($adGroup.Name)" -ForegroundColor Yellow
+                Add-ADGroupMember -Identity $adGroup.DistinguishedName -Members $adComputer.DistinguishedName -Server $domain -Confirm:$False
+            }
+            else {
+                Write-Host "<Entra Group Mapping> Unable to locate member $($Device.DisplayName)($($Device.LookupValue)) in Active Directory" -ForegroundColor Red
+            }            
         }
     }
 
-    Write-Host "<AAD Group Mapping> Checking to see if we need to remove any members from group $($adGroup.Name)." -ForegroundColor Green
-    #Looking for any stale memberships and deleting stale devices from AD Group.
-    foreach ($adGroupMember in $adGroupMembers) {
-        try {
-            if (!($adGroupMember.Name -in $aadGroupMembers.Name -or $adGroupMember.ObjectGUID -in $aadGroupMembers.Name)) {            
-                Write-Host "<AAD Group Mapping> Removing $($adGroupMember.Name) member from group $($adGroup.Name)" -ForegroundColor Yellow
-                Remove-ADGroupMember -Identity $adGroup.Name -Members $adGroupMember.distinguishedName -Confirm:$False
-            }
+    Write-Host "<Entra Group Mapping> Removing orpahaned objects from $($adGroup.Name)." -ForegroundColor Green
+    # Compare AD Devices to Entra 
+    ForEach ($Device in $adGroupMembers) {
+        IF ($Device.name -in $DeviceArray.LookupValue) {
+            #Write-Host "<Entra Group Mapping> Member $($Device.DisplayName)($($Device.LookupValue)) already exists in group $($adGroup.Name)" -ForegroundColor Green
         }
-        catch {
-            Write-Host "<AAD Group Mapping> Unable to remove computer object $($adGroupMember.Name)($($adGroupMember.Description)) from group $($adGroup.Name)" -ForegroundColor Red
+        else {     
+            Write-Host "<Entra Group Mapping> Removing $($Device.DisplayName)($($Device.LookupValue)) member from group $($adGroup.Name)" -ForegroundColor Yellow
+            Remove-ADGroupMember -Identity $adGroup.DistinguishedName -Members $Device.DistinguishedName -Server $domain -Confirm:$False      
         }
     }
 }
+#endregion Device Group Matching / Creation
